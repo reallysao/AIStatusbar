@@ -1,6 +1,6 @@
 // AI Statusbar — Touch Bar 状态条: 并行监控主流 AI 应用(豆包/ChatGPT/DeepSeek/通义千问…)
 // 常驻项: 空闲 / 进行中(阿拉伯数字 N 个) / 等待确认(红) / 完成闪烁
-// 一级详情: 各活跃 AI 一栏(状态/并发/步骤), 点击进入二级; 二级详情: 任务进度+免费额度(估算)
+// 详情面板: 各活跃 AI 一栏(状态/并发/步骤), 只保留 AI 状态显示
 // 自动识别: 安装到 /Applications 的主流 AI 应用即被识别, 最多显示活跃的 maxActive(4) 个
 import AppKit
 import Foundation
@@ -33,10 +33,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menu: NSMenu!
     private var appMenuItems: [NSMenuItem] = []
     private var autoDismissTimer: Timer?
-    private var selectedAppName: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = Config.load()
+        // 共享进程表的短名粗筛关键词: 收集全部监控关键词(去 .app 后缀)
+        var filters: [String] = []
+        for a in config.apps {
+            for kw in a.processes + a.infraProcesses {
+                let base = kw.replacingOccurrences(of: ".app", with: "").lowercased()
+                if !base.isEmpty && !filters.contains(base) { filters.append(base) }
+            }
+        }
+        ProcessTable.shared.nameFilters = filters
         monitors = config.apps.map { AppMonitor(config: $0) }
         for m in monitors {
             m.onDisplay = { [weak self] in
@@ -51,20 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             if self.paused { return }
             self.touchBar.toggleDetail(snapshots: self.activeSnapshots())
-            self.scheduleAutoDismiss()
-        }
-        touchBar.onTileTap = { [weak self] name in
-            guard let self = self else { return }
-            self.selectedAppName = name
-            if let s = self.snapshots().first(where: { $0.name == name }) {
-                self.touchBar.presentAppDetail(snapshot: s)
-                self.scheduleAutoDismiss()
-            }
-        }
-        touchBar.onBack = { [weak self] in
-            guard let self = self else { return }
-            self.selectedAppName = nil
-            self.touchBar.presentDetail(snapshots: self.activeSnapshots())
             self.scheduleAutoDismiss()
         }
         log("===== AI Statusbar 启动, 已识别: \(config.apps.map { $0.name }.joined(separator: "、")) =====")
@@ -128,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenuUI() {
         let snaps = snapshots()
+        var newTitles: [String] = []
         for (i, it) in appMenuItems.enumerated() where i < snaps.count {
             let s = snaps[i]
             let st: String
@@ -141,8 +136,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             var t = "\(s.name): \(st)"
             if !s.detailText.isEmpty { t += " \(s.detailText)" }
+            newTitles.append(t)
+            // 内容没变则跳过, 避免每 tick 更新 16 个菜单项
+            if lastMenuTitles.count > i && lastMenuTitles[i] == t { continue }
             it.title = t
         }
+        lastMenuTitles = newTitles
         for it in menu.items {
             if it.title == "暂停监控" || it.title == "恢复监控" { it.title = paused ? "恢复监控" : "暂停监控" }
             if it.title == "开机自动启动" || it.title == "取消开机自动启动" { it.title = autoStartInstalled() ? "取消开机自动启动" : "开机自动启动" }
@@ -151,14 +150,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let working = snaps.contains { $0.stateKey == "working" }
         let flashing = snaps.contains { $0.stateKey == "flashing" }
         let color: NSColor = awaiting ? .systemRed : (flashing ? .systemOrange : (working ? .systemGreen : .systemGray))
-        statusItem.button?.image = makeIcon(color: color)
+        if color != lastIconColor {
+            lastIconColor = color
+            statusItem.button?.image = makeIcon(color: color)
+        }
     }
+
+    private var lastMenuTitles: [String] = []
+    private var lastIconColor: NSColor?
 
     // MARK: - 轮询与聚合
     private func tick() {
         if paused { return }
+        ProcessTable.shared.refresh()   // 每 tick 全系统进程表只枚举一次, 所有 monitor 复用
         for m in monitors {
-            m.tick(enterSeconds: config.enterSeconds, exitSeconds: config.exitSeconds,
+            m.tick(enterSeconds: config.enterSeconds,
                    awaitingSeconds: config.awaitingSeconds,
                    awaitingEnterSeconds: config.awaitingEnterSeconds,
                    flashCount: config.flashCount) {
@@ -190,9 +196,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateCompact(snaps)
         updateMenuUI()
         touchBar.updateDetail(snapshots: activeSnapshots())
-        if let name = selectedAppName, let s = snaps.first(where: { $0.name == name }) {
-            touchBar.updateAppDetail(snapshot: s)
-        }
     }
 
     /// 常驻项: 空闲 / 进行中(阿拉伯数字 N 个) / 等待(红) / 完成闪烁
