@@ -25,26 +25,7 @@
 
 * 不显示运行时间
 
-* **再点一下某栏（如豆包）→ 进入该应用的二级详情**
-
-**二级详情**（再点开某个 AI）：
-
-
-
-* **任务进度**：动画进度条 + "已完成 N 步"
-
-* **免费额度进度条（估算）**：已用 / 上限，进度条颜色随用量变化
-
-
-  * ≥75% 橙色 + "快用完了，记得用掉"
-
-  * ≥90% 红色 + "即将用完，记得用掉！"
-
-* "← 返回" 回到一级详情
-
-> **关于 "任务数 / 进度 / 额度" 的口径**
->
-> （都是估算 / 可观测信号，非官方数据）：
+> **关于 "任务数 / 进度" 的口径**（都是估算 / 可观测信号，非官方数据）：
 > **并发任务数**
 >
 >  \= 任务执行基础设施（AgentInfraService）当前活动的直接子进程数（实测每个都是 
@@ -54,14 +35,7 @@
 > ，一个 = 一个正在执行的工具调用）；
 > **已完成步骤数**
 >
->  \= 逐个跟踪这些子进程的消亡，每结束一个计一步（支持并发）；
-> **免费额度**
->
->  \= 你手动设定的每月额度上限（
->
-> `quotaLimit`
->
-> ，默认给了粗估值），已用 = 本地统计的每月工作会话数。不是官方 API 数据，可在 config.json 调整。
+>  \= 逐个跟踪这些子进程的消亡，每结束一个计一步（支持并发）。
 
 ## 自动识别
 
@@ -103,7 +77,7 @@
 ```
 {
 
-&#x20; "pollSeconds": 1,
+&#x20; "pollSeconds": 2,
 
 &#x20; "enterSeconds": 2,
 
@@ -119,13 +93,13 @@
 
 &#x20; "apps": \[
 
-&#x20;   { "name": "豆包", "processes": \["Doubao.app"], "infraProcesses": \["AgentInfraService"], "cpuThreshold": 15, "quotaLimit": 200, "quotaUnit": "次" },
+&#x20;   { "name": "豆包", "processes": \["Doubao.app"], "infraProcesses": \["AgentInfraService"], "cpuThreshold": 15 },
 
-&#x20;   { "name": "ChatGPT", "processes": \["ChatGPT.app"], "cpuThreshold": 20, "quotaLimit": 100, "quotaUnit": "次" },
+&#x20;   { "name": "ChatGPT", "processes": \["ChatGPT.app"], "cpuThreshold": 20 },
 
-&#x20;   { "name": "DeepSeek", "processes": \["DeepSeek.app"], "cpuThreshold": 20, "quotaLimit": 500, "quotaUnit": "次" },
+&#x20;   { "name": "DeepSeek", "processes": \["DeepSeek.app"], "cpuThreshold": 20 },
 
-&#x20;   { "name": "通义千问", "processes": \["通义千问.app", "Qianwen.app", "Tongyi.app"], "cpuThreshold": 20, "quotaLimit": 500, "quotaUnit": "次" }
+&#x20;   { "name": "通义千问", "processes": \["通义千问.app", "Qianwen.app", "Tongyi.app"], "cpuThreshold": 20 }
 
 &#x20; ]
 
@@ -139,8 +113,6 @@
 * `infraProcesses`：任务基础设施进程名。其**直接子进程**作为 "并发任务数"、逐个消亡作为 "已完成步骤数"。没有就不填，仅靠 CPU 信号判定。
 
 * `cpuThreshold`：聚合 CPU% 阈值，仅作为 "是否在思考 / 生成" 的判定信号。
-
-* `quotaLimit`/`quotaUnit`：免费额度估算上限与单位；`0` = 不显示额度进度条。已用量 = 本地每月会话计数。
 
 * `awaitingSeconds`：进入"等待确认"后，持续无活动多久视为任务结束；`awaitingEnterSeconds`：任务刚启动（一步未完成）时，无活动多久进入"等待确认"（已跑过多步的任务自动用 3 倍阈值）；`maxActive`：详情面板最多显示的活跃应用数。
 
@@ -170,4 +142,6 @@
 
 * DeepSeek、通义千问桌面版需自行安装，装上即自动识别；若包名与预置关键词不同导致没识别，把真实包名填进 config.json 即可。
 
-* 应用不开放任务进度 API，"进度" 以**并发任务数 + 已完成步骤数**体现；"免费额度" 为本地估算（手动配额 vs 会话计数），非官方数据。
+* 应用不开放任务进度 API，"进度" 以**并发任务数 + 已完成步骤数**体现（可观测信号，非官方数据）。
+
+* 低资源占用：共享进程表 + 短名粗筛 + 2 秒轮询 + 界面去重，稳态 CPU 约 3%（可配置 `pollSeconds` 放宽）。
