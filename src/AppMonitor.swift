@@ -1,8 +1,8 @@
 // AppMonitor.swift — 单个被监控应用的状态机与指标采集
 // 信号1: 基础设施进程(如 AgentInfraService)的直接子进程 => 并发任务数 (逐个消亡=步骤进度)
-// 信号2: 应用全部进程聚合 CPU% 超过阈值 => 正在思考/生成
-// 状态机: 空闲 → 连续enter秒工作 → 工作中 → 连续exit秒无活动 → 等待确认(红色) → 持续无活动 → 闪烁 → 空闲
-// 等待确认(awaiting): 工作途中突然无活动(如弹确认框/权限请求), 红色提醒; 恢复活动则回到工作中
+// 信号2: 应用全部进程聚合 CPU% 超过阈值 => 正在思考/生成 (仅无子进程活动时才计算 CPU, 省开销)
+// 状态机: 空闲 → 连续enter秒工作 → 工作中 → 连续无活动 → 等待确认(红色) → 持续无活动 → 闪烁 → 空闲
+// 进程表: 复用 ProcessTable.shared (每 tick 全系统只枚举一次)
 import Foundation
 import Darwin
 
@@ -15,12 +15,6 @@ enum AppState {
     case flashing
 }
 
-struct ProcInfo {
-    let pid: pid_t
-    let ppid: pid_t
-    let path: String
-}
-
 /// 展示快照 (UI 无关, 由 UI 层映射颜色)
 struct AppSnapshot {
     let name: String
@@ -30,9 +24,6 @@ struct AppSnapshot {
     let flashOn: Bool
     let children: Int      // 当前并发任务数
     let steps: Int         // 本次任务已完成步骤数
-    let quotaUsed: Int     // 本月已用会话数 (额度估算)
-    let quotaLimit: Int    // 手动配额上限 (0=不启用)
-    let quotaUnit: String
 }
 
 final class AppMonitor {
@@ -46,77 +37,33 @@ final class AppMonitor {
     /// 展示刷新回调 (闪烁期间 240ms 高频触发, 需自行切主线程)
     var onDisplay: (() -> Void)?
 
-    private var allProcs: [ProcInfo] = []
     private var prevCPUTime: [pid_t: UInt64] = [:]
     private var prevSampleTime: UInt64 = 0
     private var prevChildPIDs: Set<pid_t> = []
 
     init(config: AppConfig) { self.config = config }
 
-    // MARK: - 进程枚举
-    private func match(_ kw: String, _ path: String) -> Bool {
-        path.lowercased().contains(kw.lowercased())
-    }
-
-    func refreshProcessList() {
-        var pids = [pid_t](repeating: 0, count: 8192)
-        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
-        guard count > 0 else { return }
-        var list: [ProcInfo] = []
-        for i in 0..<Int(count) {
-            let pid = pids[i]
-            var pathBuf = [CChar](repeating: 0, count: 4096)
-            let len = proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count))
-            let path = len > 0 ? String(cString: pathBuf) : ""
-            var bsd = proc_bsdinfo()
-            let r = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout<proc_bsdinfo>.size))
-            let ppid = r > 0 ? bsd.pbi_ppid : 0
-            list.append(ProcInfo(pid: pid, ppid: pid_t(ppid), path: path))
-        }
-        allProcs = list
-    }
+    private var table: ProcessTable { ProcessTable.shared }
 
     func appPIDs() -> Set<pid_t> {
-        var s = Set<pid_t>()
-        for p in allProcs {
-            for kw in config.processes where match(kw, p.path) { s.insert(p.pid); break }
-        }
-        return s
+        table.pids(matching: config.processes)
     }
 
     func infraPID() -> pid_t? {
-        for p in allProcs {
-            for kw in config.infraProcesses where match(kw, p.path) { return p.pid }
-        }
-        return nil
-    }
-
-    func descendants(of root: pid_t) -> Set<pid_t> {
-        var result = Set<pid_t>()
-        var frontier = [root]
-        while !frontier.isEmpty {
-            let parent = frontier.removeLast()
-            for p in allProcs where p.ppid == parent && p.pid != parent {
-                if !result.contains(p.pid) {
-                    result.insert(p.pid)
-                    frontier.append(p.pid)
-                }
-            }
-        }
-        return result
+        table.firstPID(matching: config.infraProcesses)
     }
 
     /// 基础设施下的活动直接子进程 PID 集合
     /// 豆包: AgentInfraService 的直接子进程都是 /bin/bash, 每个 = 一个正在执行的工具调用
     func activeTaskPIDs() -> Set<pid_t> {
         guard let pid = infraPID() else { return [] }
-        return Set(allProcs.filter { $0.ppid == pid }.map { $0.pid })
+        return Set(table.directChildren(of: pid).map { $0.pid })
     }
 
     /// 是否有任意活动子进程 (工具执行阶段信号)
     func hasInfraActivity() -> Bool {
         guard let pid = infraPID() else { return false }
-        return !descendants(of: pid).isEmpty
+        return !table.descendants(of: pid).isEmpty
     }
 
     /// 应用全部进程聚合 CPU% (可超 100)
@@ -124,7 +71,7 @@ final class AppMonitor {
         let now = mach_absolute_time()
         var total: Double = 0
         let pids = appPIDs()
-        for p in allProcs where pids.contains(p.pid) {
+        for p in table.all where pids.contains(p.pid) {
             var info = proc_taskinfo()
             let r = proc_pidinfo(p.pid, PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
             guard r > 0 else { continue }
@@ -149,18 +96,20 @@ final class AppMonitor {
         !appPIDs().isEmpty
     }
 
-    /// 综合判断: 有活动子进程 或 聚合CPU超阈值
+    /// 综合判断: 有活动子进程 => 工作中 (免算 CPU); 否则看聚合 CPU 是否超阈值
     func isWorking() -> Bool {
         children = activeTaskPIDs().count
+        if children > 0 || hasInfraActivity() {
+            return true
+        }
         cpu = cpuPercent()
-        return hasInfraActivity() || cpu > config.cpuThreshold
+        return cpu > config.cpuThreshold
     }
 
     // MARK: - 状态机 (由主定时器驱动)
-    func tick(enterSeconds: Int, exitSeconds: Int, awaitingSeconds: Int, awaitingEnterSeconds: Int,
+    func tick(enterSeconds: Int, awaitingSeconds: Int, awaitingEnterSeconds: Int,
               flashCount: Int, onFlashEnd: @escaping () -> Void) {
         if case .flashing = state { return }
-        refreshProcessList()
         let currentChildPIDs = activeTaskPIDs()
         let working = isWorking()
 
@@ -200,8 +149,7 @@ final class AppMonitor {
                     state = .working
                     stepsCompleted = 0
                     prevChildPIDs = []
-                    UsageStore.shared.recordSession(app: config.name)
-                    log("[\(config.name)] → 工作开始 (本月第 \(UsageStore.shared.used(app: config.name)) 次)")
+                    log("[\(config.name)] → 工作开始")
                 } else {
                     state = .pendingUp(n + 1)
                 }
@@ -278,8 +226,6 @@ final class AppMonitor {
         }
         return AppSnapshot(name: config.name, stateKey: stateKey, cpuText: cpuText,
                            detailText: detailParts.joined(separator: " · "), flashOn: flashOn,
-                           children: children, steps: stepsCompleted,
-                           quotaUsed: UsageStore.shared.used(app: config.name),
-                           quotaLimit: config.quotaLimit, quotaUnit: config.quotaUnit)
+                           children: children, steps: stepsCompleted)
     }
 }
