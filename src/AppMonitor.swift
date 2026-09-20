@@ -211,7 +211,7 @@ final class AppMonitor {
         case .working:
             if !working {
                 state = .pendingDown(1)
-                log("[\(config.name)] 工作信号消失, 等待确认 (children=\(children), cpu=\(String(format: "%.1f", cpu))%)")
+                log("[\(config.name)] 工作信号消失, 等待恢复 (children=\(children), cpu=\(String(format: "%.1f", cpu))%)")
             }
         case .pendingDown(let n):
             if working {
