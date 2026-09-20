@@ -33,7 +33,7 @@ echo "compiling..."
 swiftc -O \
     -o "$BIN" \
     "$SRC/Config.swift" \
-    "$SRC/UsageStore.swift" \
+    "$SRC/ProcessTable.swift" \
     "$SRC/AppMonitor.swift" \
     "$SRC/TouchBarController.swift" \
     "$SRC/main.swift" \
