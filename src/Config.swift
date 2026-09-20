@@ -9,13 +9,11 @@ struct AppConfig {
     var processes: [String]       // .app 包名/进程关键词 (大小写不敏感)
     var infraProcesses: [String]  // 任务基础设施进程 (直接子进程=并发任务, 逐个消亡=步骤)
     var cpuThreshold: Double      // 聚合 CPU% 阈值, 高于视为工作中(思考/生成)
-    var quotaLimit: Int = 0       // 免费额度估算上限, 0 = 不启用额度进度条
-    var quotaUnit: String = "次"   // 额度单位
 }
 
 struct Config {
     var apps: [AppConfig] = []
-    var pollSeconds = 1
+    var pollSeconds = 2           // 轮询间隔(秒): 1 秒过密, 2 秒足够且省 CPU
     var enterSeconds = 2
     var exitSeconds = 4
     var flashCount = 3
@@ -25,12 +23,11 @@ struct Config {
     var maxActive = 4             // 详情面板最多显示的活跃应用数
 
     // MARK: - 已知主流 AI 应用表 (含优先级顺序)
-    // quotaLimit 为"免费额度估算上限"(按会话次数粗估, 非官方数据), 可在 config.json 调整; 0=不显示额度条
     static let knownApps: [AppConfig] = [
-        AppConfig(name: "豆包", processes: ["Doubao.app"], infraProcesses: ["AgentInfraService"], cpuThreshold: 15, quotaLimit: 200),
-        AppConfig(name: "ChatGPT", processes: ["ChatGPT.app"], infraProcesses: [], cpuThreshold: 20, quotaLimit: 100),
-        AppConfig(name: "DeepSeek", processes: ["DeepSeek.app"], infraProcesses: [], cpuThreshold: 20, quotaLimit: 500),
-        AppConfig(name: "通义千问", processes: ["通义千问.app", "Qianwen.app", "Tongyi.app"], infraProcesses: [], cpuThreshold: 20, quotaLimit: 500),
+        AppConfig(name: "豆包", processes: ["Doubao.app"], infraProcesses: ["AgentInfraService"], cpuThreshold: 15),
+        AppConfig(name: "ChatGPT", processes: ["ChatGPT.app"], infraProcesses: [], cpuThreshold: 20),
+        AppConfig(name: "DeepSeek", processes: ["DeepSeek.app"], infraProcesses: [], cpuThreshold: 20),
+        AppConfig(name: "通义千问", processes: ["通义千问.app", "Qianwen.app", "Tongyi.app"], infraProcesses: [], cpuThreshold: 20),
         AppConfig(name: "Kimi", processes: ["Kimi.app", "Moonshot.app"], infraProcesses: [], cpuThreshold: 20),
         AppConfig(name: "智谱清言", processes: ["智谱清言.app", "ChatGLM.app", "GLM.app"], infraProcesses: [], cpuThreshold: 20),
         AppConfig(name: "文心一言", processes: ["文心一言.app", "ERNIE.app", "Wenxin.app"], infraProcesses: [], cpuThreshold: 20),
@@ -80,7 +77,7 @@ struct Config {
             if FileManager.default.fileExists(atPath: file.path) {
                 let data = try Data(contentsOf: file)
                 if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    if let v = json["pollSeconds"] as? Int { cfg.pollSeconds = v }
+                    if let v = json["pollSeconds"] as? Int, v >= 1 { cfg.pollSeconds = v }
                     if let v = json["enterSeconds"] as? Int { cfg.enterSeconds = v }
                     if let v = json["exitSeconds"] as? Int { cfg.exitSeconds = v }
                     if let v = json["flashCount"] as? Int { cfg.flashCount = v }
@@ -94,12 +91,9 @@ struct Config {
                         for a in arr {
                             guard let name = a["name"] as? String,
                                   let procs = a["processes"] as? [String], !procs.isEmpty else { continue }
-                            var ac = AppConfig(name: name, processes: procs,
-                                               infraProcesses: a["infraProcesses"] as? [String] ?? [],
-                                               cpuThreshold: a["cpuThreshold"] as? Double ?? 20)
-                            ac.quotaLimit = a["quotaLimit"] as? Int ?? 0
-                            ac.quotaUnit = a["quotaUnit"] as? String ?? "次"
-                            apps.append(ac)
+                            apps.append(AppConfig(name: name, processes: procs,
+                                                  infraProcesses: a["infraProcesses"] as? [String] ?? [],
+                                                  cpuThreshold: a["cpuThreshold"] as? Double ?? 20))
                         }
                         if !apps.isEmpty { cfg.apps = apps }
                     } else if let oldApps = json["apps"] as? [String], !oldApps.isEmpty {
@@ -128,7 +122,6 @@ struct Config {
                 "apps": cfg.apps.map { a -> [String: Any] in
                     var d: [String: Any] = ["name": a.name, "processes": a.processes, "cpuThreshold": a.cpuThreshold]
                     if !a.infraProcesses.isEmpty { d["infraProcesses"] = a.infraProcesses }
-                    if a.quotaLimit > 0 { d["quotaLimit"] = a.quotaLimit; d["quotaUnit"] = a.quotaUnit }
                     return d
                 },
             ]
