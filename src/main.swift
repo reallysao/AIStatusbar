@@ -265,7 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             <key>ProgramArguments</key>
             <array><string>\(Bundle.main.executablePath!)</string></array>
             <key>RunAtLoad</key><true/>
-            <key>KeepAlive</key><false/>
+            <key>KeepAlive</key>
+            <dict><key>SuccessfulExit</key><false/></dict>
         </dict>
         </plist>
         """
